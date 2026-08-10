@@ -180,9 +180,45 @@ PyTorch tensors and NumPy arrays can convert back and forth:
 - `tensor.numpy()` converts a CPU tensor to a NumPy array.
 - `torch.from_numpy(ndarray)` converts a NumPy array into a PyTorch tensor.
 
+## PyTorch Pipeline
+
+A PyTorch pipeline is the end-to-end process for training and evaluating a model. It organizes the workflow into repeatable stages:
+
+1. Data loading and cleaning
+2. Feature scaling and label encoding
+3. Converting data to PyTorch tensors
+4. Defining a model and forward computation
+5. Computing a loss function
+6. Running backpropagation to compute gradients
+7. Updating model parameters
+8. Evaluating on validation or test data
+
+In the pipeline notebook, this is implemented using a custom simple neural network and manual gradient updates.
+
+### How to use a PyTorch pipeline
+
+- Start by loading your dataset into `pandas` or another data source.
+- Clean the data by removing unused columns and handling missing values.
+- Split the data into training and test sets with `train_test_split`.
+- Scale numeric features using `StandardScaler` so the model trains more reliably.
+- Encode categorical labels with `LabelEncoder` when working on classification.
+- Convert NumPy arrays to `torch.Tensor` objects for PyTorch computation.
+- Define a model class with a `forward()` method and any learnable parameters.
+- Use a loss function such as binary cross-entropy for classification tasks.
+- In the training loop:
+  - run the forward pass to compute predictions,
+  - compute the loss,
+  - call `loss.backward()` to compute gradients,
+  - update model parameters with gradient descent,
+  - zero gradients before the next iteration.
+- During evaluation, wrap prediction code in `with torch.no_grad():` to disable gradient tracking.
+
+This workflow shows how PyTorch is used not just for tensor math, but for a complete supervised learning pipeline from raw data to model accuracy.
+
 ---
 
 ## Files in this repository
 
 - `pytorch_autograd.ipynb`: contains examples and explanations for gradient tracking, backward passes, manual loss derivatives, and disabling gradients.
 - `Tensors.ipynb`: contains tensor creation, dtype and shape examples, math operations, reductions, matrix operations, GPU support, reshaping, and NumPy interoperability.
+- `Pipeline.ipynb`: contains a complete supervised learning pipeline for breast cancer detection using `pandas`, `scikit-learn`, and a simple PyTorch model.
