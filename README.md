@@ -13,7 +13,8 @@ A comprehensive collection of everything learned while studying PyTorch — from
 5. [Dataset & DataLoader](#5-dataset--dataloader)
 6. [Full Training Pipeline with Dataset & DataLoader](#6-full-training-pipeline-with-dataset--dataloader)
 7. [ANN on Fashion MNIST](#7-ann-on-fashion-mnist)
-8. [Files in this Repository](#8-files-in-this-repository)
+8. [ANN on Fashion MNIST (GPU)](#8-ann-on-fashion-mnist-gpu)
+9. [Files in this Repository](#9-files-in-this-repository)
 
 ---
 
@@ -561,7 +562,35 @@ plt.show()
 
 ---
 
-## 8. Files in this Repository
+## 8. ANN on Fashion MNIST (GPU)
+
+The same ANN architecture as Section 7, but retrained with GPU acceleration enabled for faster training.
+
+### Key Differences from CPU Version
+
+| Aspect | CPU Version | GPU Version |
+|---|---|---|
+| Device | `cpu` | `cuda` |
+| Tensor placement | Default | `.to(device)` on model & data |
+| Training speed | Baseline | Significantly faster on large datasets |
+
+### GPU Setup
+
+```python
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+model = MyNN(num_features).to(device)
+
+# Move batch tensors to GPU inside the training loop
+for batch_features, batch_labels in train_loader:
+    batch_features = batch_features.to(device)
+    batch_labels   = batch_labels.to(device)
+    ...
+```
+
+---
+
+## 9. Files in this Repository
 
 | File | Description |
 |---|---|
@@ -573,6 +602,7 @@ plt.show()
 | [`dataset_and_dataloader_demo.ipynb`](./dataset_and_dataloader_demo.ipynb) | Custom `Dataset` class and `DataLoader` usage |
 | [`pytorch_training_pipeline_using_dataset_and_dataloader.ipynb`](./pytorch_training_pipeline_using_dataset_and_dataloader.ipynb) | Full pipeline with Dataset, DataLoader, optimizer, training & eval loops |
 | [`ann_fashion_mnist_python.ipynb`](./ann_fashion_mnist_python.ipynb) | ANN trained on Fashion MNIST (83.5% accuracy) |
+| [`ann_fashion_mnist_python_gpu.ipynb`](./ann_fashion_mnist_python_gpu.ipynb) | ANN on Fashion MNIST with GPU acceleration (`cuda`) |
 | [`fmnist_small.csv`](./fmnist_small.csv) | Fashion MNIST dataset (CSV format) |
 
 ---
