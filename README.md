@@ -14,7 +14,8 @@ A comprehensive collection of everything learned while studying PyTorch — from
 6. [Full Training Pipeline with Dataset & DataLoader](#6-full-training-pipeline-with-dataset--dataloader)
 7. [ANN on Fashion MNIST](#7-ann-on-fashion-mnist)
 8. [ANN on Fashion MNIST (GPU)](#8-ann-on-fashion-mnist-gpu)
-9. [Files in this Repository](#9-files-in-this-repository)
+9. [Regularization Techniques](#9-regularization-techniques)
+10. [Files in this Repository](#10-files-in-this-repository)
 
 ---
 
@@ -590,7 +591,226 @@ for batch_features, batch_labels in train_loader:
 
 ---
 
-## 9. Files in this Repository
+## 9. Regularization Techniques
+
+Regularization reduces **overfitting** — when a model performs great on training data but poorly on unseen data. These three techniques are the most widely used in deep learning.
+
+---
+
+### 9.1 Dropout
+
+#### What is it?
+Dropout **randomly deactivates** a fraction of neurons during each training step. This forces the network to learn **redundant representations** and prevents over-reliance on any single neuron.
+
+#### How it works
+- During training: each neuron is zeroed out with probability `p` (the **dropout rate**).
+- Remaining activations are scaled up by `1 / (1 - p)` to keep the expected output unchanged.
+- During **inference** (`model.eval()`): dropout is **disabled** — all neurons are active.
+
+```
+Typical dropout rates:
+  p = 0.2  → drop 20% of neurons (light regularization)
+  p = 0.5  → drop 50% of neurons (strong regularization)
+```
+
+#### PyTorch Implementation
+
+```python
+import torch.nn as nn
+
+class MyModelWithDropout(nn.Module):
+    def __init__(self, num_features):
+        super().__init__()
+        self.model = nn.Sequential(
+            nn.Linear(num_features, 256),
+            nn.ReLU(),
+            nn.Dropout(p=0.3),          # Drop 30% of neurons
+
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(p=0.2),          # Drop 20% of neurons
+
+            nn.Linear(128, 10)
+        )
+
+    def forward(self, x):
+        return self.model(x)
+```
+
+#### ⚠️ Important: `model.train()` vs `model.eval()`
+
+```python
+model.train()   # Dropout ACTIVE   → use during training
+model.eval()    # Dropout INACTIVE → use during evaluation/inference
+```
+
+> **Rule of thumb:** Use higher dropout (`p=0.4–0.5`) on large layers and lower (`p=0.1–0.2`) on smaller layers. Never use dropout on the output layer.
+
+---
+
+### 9.2 Batch Normalization
+
+#### What is it?
+Batch Normalization **normalizes the output of a layer** across the current mini-batch — keeping activations centered (mean ≈ 0, std ≈ 1). This stabilizes and accelerates training.
+
+#### How it works
+For each mini-batch, it computes:
+
+```
+μ  = mean of the batch
+σ² = variance of the batch
+x̂ = (x - μ) / √(σ² + ε)        # Normalize
+y  = γ * x̂ + β                  # Scale & shift (learned params)
+```
+
+- `γ` (gamma) and `β` (beta) are **learnable parameters** the model adjusts during training.
+- `ε` is a tiny constant for numerical stability.
+- At inference, running mean/variance accumulated during training is used instead of batch stats.
+
+#### PyTorch Implementation
+
+```python
+class MyModelWithBN(nn.Module):
+    def __init__(self, num_features):
+        super().__init__()
+        self.model = nn.Sequential(
+            nn.Linear(num_features, 256),
+            nn.BatchNorm1d(256),        # Normalize after linear layer
+            nn.ReLU(),
+
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+
+            nn.Linear(128, 10)
+        )
+
+    def forward(self, x):
+        return self.model(x)
+```
+
+> **Note:** `BatchNorm1d` is for 1D/tabular data and fully-connected layers. Use `BatchNorm2d` for CNNs (images).
+
+#### BatchNorm placement — Before or After activation?
+
+| Approach | Common Usage |
+|---|---|
+| `Linear → BN → ReLU` | Most common in practice |
+| `Linear → ReLU → BN` | Also used; slightly different behavior |
+
+#### Benefits of Batch Normalization
+
+- Acts as a **regularizer** — often reduces the need for dropout
+- Allows **higher learning rates** → faster convergence
+- Reduces sensitivity to **weight initialization**
+- Smooths the **loss landscape**
+
+> ⚠️ Batch Normalization behaves differently during `model.train()` vs `model.eval()`. Always call `model.eval()` for inference!
+
+---
+
+### 9.3 L2 Regularization (Weight Decay)
+
+#### What is it?
+L2 regularization adds a **penalty term** to the loss function proportional to the **square of the weights**. This discourages the model from learning very large weights, keeping the model simpler.
+
+#### The Math
+
+```
+Total Loss = Original Loss + λ * Σ(w²)
+
+where:
+  λ (lambda) = regularization strength (weight_decay)
+  w           = model weights
+```
+
+During gradient update:
+```
+w ← w - lr * (∂Loss/∂w + 2λw)
+     ↑ gradient    ↑ decay term
+```
+
+This is called **weight decay** because the weights are decayed toward zero at each step.
+
+#### PyTorch Implementation
+
+In PyTorch, L2 regularization is built into optimizers via the `weight_decay` parameter — no manual loss modification needed:
+
+```python
+import torch.optim as optim
+
+# SGD with L2 regularization (weight_decay = λ)
+optimizer = optim.SGD(
+    model.parameters(),
+    lr=0.01,
+    weight_decay=1e-4    # λ = 0.0001
+)
+
+# Adam with L2 regularization
+optimizer = optim.Adam(
+    model.parameters(),
+    lr=1e-3,
+    weight_decay=1e-4
+)
+```
+
+#### Choosing λ (weight_decay)
+
+| Value | Effect |
+|---|---|
+| `0` | No regularization |
+| `1e-5` to `1e-3` | Light to moderate (most common range) |
+| `> 1e-2` | Strong — may underfit |
+
+> **Tip:** Start with `weight_decay=1e-4` and tune via cross-validation.
+
+---
+
+### 9.4 Combining All Three
+
+In practice, these techniques are often **used together**:
+
+```python
+class RegularizedModel(nn.Module):
+    def __init__(self, num_features):
+        super().__init__()
+        self.model = nn.Sequential(
+            nn.Linear(num_features, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(p=0.3),
+
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Dropout(p=0.2),
+
+            nn.Linear(128, 10)
+        )
+
+    def forward(self, x):
+        return self.model(x)
+
+
+# Optimizer with L2 weight decay
+optimizer = optim.Adam(
+    model.parameters(),
+    lr=1e-3,
+    weight_decay=1e-4
+)
+```
+
+### Quick Comparison
+
+| Technique | What it does | Where applied | PyTorch API |
+|---|---|---|---|
+| **Dropout** | Randomly drops neurons | Inside model layers | `nn.Dropout(p=...)` |
+| **Batch Normalization** | Normalizes layer outputs | After linear/conv layers | `nn.BatchNorm1d/2d(...)` |
+| **L2 / Weight Decay** | Penalizes large weights | In the optimizer | `weight_decay=...` in optimizer |
+
+---
+
+## 10. Files in this Repository
 
 | File | Description |
 |---|---|
