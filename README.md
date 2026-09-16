@@ -15,7 +15,8 @@ A comprehensive collection of everything learned while studying PyTorch — from
 7. [ANN on Fashion MNIST](#7-ann-on-fashion-mnist)
 8. [ANN on Fashion MNIST (GPU)](#8-ann-on-fashion-mnist-gpu)
 9. [Regularization Techniques](#9-regularization-techniques)
-10. [Files in this Repository](#10-files-in-this-repository)
+10. [Hyperparameter Tuning with Optuna](#10-hyperparameter-tuning-with-optuna)
+11. [Files in this Repository](#11-files-in-this-repository)
 
 ---
 
@@ -810,7 +811,131 @@ optimizer = optim.Adam(
 
 ---
 
-## 10. Files in this Repository
+## 10. Hyperparameter Tuning with Optuna
+
+This notebook demonstrates how to use **Optuna** — an automatic hyperparameter optimization framework — to find the best configuration for an ANN trained on the full Fashion MNIST dataset.
+
+### What is Optuna?
+
+Optuna is a define-by-run hyperparameter optimization framework. Instead of a fixed grid, it uses **Bayesian-inspired sampling** (TPE — Tree-structured Parzen Estimator) to intelligently explore the search space and converge on good configurations faster than grid or random search.
+
+| Concept | Description |
+|---|---|
+| **Study** | An optimization session that manages all trials |
+| **Trial** | A single evaluation with one set of hyperparameters |
+| **Objective function** | The function Optuna calls each trial — returns the metric to maximize or minimize |
+| `suggest_int(name, low, high)` | Sample an integer hyperparameter |
+| `suggest_float(name, low, high, log=True)` | Sample a float (optionally on a log scale) |
+| `suggest_categorical(name, choices)` | Sample from a discrete set of values |
+
+### Dataset
+
+- **Source:** `fashion-mnist_train.csv` — full training split (60,471 samples, 785 columns)
+- **Preprocessing:** Missing values imputed with median via `SimpleImputer`; pixel values normalized to `[0, 1]` by dividing by 255
+- **Split:** 80% train / 20% test (`random_state=42`)
+- **Device:** GPU (`cuda`) detected and used automatically
+
+### Dynamic Model Architecture — `MyNN`
+
+The model is built dynamically based on trial-suggested hyperparameters:
+
+```python
+class MyNN(nn.Module):
+    def __init__(self, input_dim, output_dim, num_hidden_layers,
+                 neurons_per_layer, dropout_rate):
+        super().__init__()
+        layers = []
+        for i in range(num_hidden_layers):
+            layers.append(nn.Linear(input_dim, neurons_per_layer))
+            layers.append(nn.BatchNorm1d(neurons_per_layer))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout_rate))
+            input_dim = neurons_per_layer
+        layers.append(nn.Linear(neurons_per_layer, output_dim))
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.model(x)
+```
+
+Each hidden block is: `Linear → BatchNorm1d → ReLU → Dropout`
+
+### Hyperparameter Search Space
+
+| Hyperparameter | Type | Range / Choices |
+|---|---|---|
+| `num_hidden_layers` | `int` | 1 – 5 |
+| `neurons_per_layer` | `int` (step=8) | 8 – 128 |
+| `epochs` | `int` (step=10) | 10 – 50 |
+| `learning_rate` | `float` (log scale) | 1e-5 – 1e-1 |
+| `dropout_rate` | `float` (step=0.1) | 0.1 – 0.5 |
+| `batch_size` | `categorical` | 16, 32, 64, 128 |
+| `optimizer` | `categorical` | Adam, SGD, RMSprop |
+| `weight_decay` | `float` (log scale) | 1e-5 – 1e-1 |
+
+### Objective Function
+
+Each trial:
+1. Samples all hyperparameters from the search space above
+2. Creates `DataLoader`s with the trial's `batch_size`
+3. Initializes `MyNN` with the trial's architecture settings
+4. Selects the optimizer (Adam / SGD / RMSprop) with the trial's `lr` and `weight_decay`
+5. Trains for `epochs` epochs
+6. Evaluates on the test set and returns **accuracy** (the metric to maximize)
+
+```python
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=10)
+```
+
+### Trial Results (10 Trials)
+
+| Trial | Accuracy | Layers | Neurons | Epochs | LR | Dropout | Batch | Optimizer | Weight Decay |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | 78.52% | 4 | 40 | 30 | 1.57e-3 | 0.1 | 16 | Adam | 1.55e-2 |
+| 1 | 84.94% | 3 | 80 | 30 | 2.97e-5 | 0.5 | 128 | Adam | 1.71e-5 |
+| **2** | **89.67%** | **3** | **104** | **40** | **1.42e-4** | **0.1** | **32** | **Adam** | **8.64e-3** |
+| 3 | 87.41% | 4 | 24 | 40 | 1.84e-2 | 0.1 | 128 | SGD | 2.40e-4 |
+| 4 | 87.38% | 3 | 64 | 50 | 4.00e-2 | 0.2 | 128 | SGD | 6.20e-3 |
+| 5 | 87.37% | 3 | 24 | 30 | 9.16e-4 | 0.1 | 32 | RMSprop | 2.66e-5 |
+| 6 | 88.94% | 2 | 96 | 30 | 2.55e-5 | 0.1 | 16 | Adam | 1.53e-4 |
+| 7 | 73.02% | 5 | 72 | 30 | 1.80e-3 | 0.1 | 64 | RMSprop | 2.66e-2 |
+| 8 | 68.44% | 5 | 72 | 40 | 5.31e-5 | 0.3 | 32 | SGD | 6.99e-2 |
+| 9 | 87.13% | 4 | 96 | 10 | 2.47e-4 | 0.2 | 64 | Adam | 3.85e-2 |
+
+### Best Trial
+
+```python
+study.best_value   # → 0.8966515088879702  (~89.7%)
+
+study.best_params
+# {
+#   'num_hidden_layers': 3,
+#   'neurons_per_layer': 104,
+#   'epochs': 40,
+#   'learning_rate': 0.00014200910700454977,
+#   'dropout_rate': 0.1,
+#   'batch_size': 32,
+#   'optimizer': 'Adam',
+#   'weight_decay': 0.008636489815625446
+# }
+```
+
+### Key Takeaways
+
+| Insight | Detail |
+|---|---|
+| **Best accuracy** | ~89.7% (Trial 2) — significantly better than the baseline 83.5% |
+| **Best optimizer** | Adam with low LR (`1.42e-4`) and moderate weight decay (`8.64e-3`) |
+| **Best architecture** | 3 hidden layers, 104 neurons each, 10% dropout |
+| **Worst configs** | Deep networks (5 layers) with SGD tended to underperform |
+| **Optuna advantage** | 10 trials explored a diverse set of configs; smart sampling avoids exhaustive grid search |
+
+> **Tip:** Run more trials (`n_trials=50+`) with Optuna's pruning callbacks (`optuna.integration.PyTorchLightningPruningCallback`) to find even better configurations efficiently.
+
+---
+
+## 11. Files in this Repository
 
 | File | Description |
 |---|---|
@@ -823,6 +948,7 @@ optimizer = optim.Adam(
 | [`pytorch_training_pipeline_using_dataset_and_dataloader.ipynb`](./pytorch_training_pipeline_using_dataset_and_dataloader.ipynb) | Full pipeline with Dataset, DataLoader, optimizer, training & eval loops |
 | [`ann_fashion_mnist_python.ipynb`](./ann_fashion_mnist_python.ipynb) | ANN trained on Fashion MNIST (83.5% accuracy) |
 | [`ann_fashion_mnist_python_gpu.ipynb`](./ann_fashion_mnist_python_gpu.ipynb) | ANN on Fashion MNIST with GPU acceleration (`cuda`) |
+| [`Hyperparameter_Tuning_the_ANN_using_Optuna.ipynb`](./Hyperparameter_Tuning_the_ANN_using_Optuna.ipynb) | ANN hyperparameter tuning with Optuna (best: ~89.7% accuracy) |
 | [`fmnist_small.csv`](./fmnist_small.csv) | Fashion MNIST dataset (CSV format) |
 
 ---
