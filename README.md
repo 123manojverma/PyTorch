@@ -16,7 +16,8 @@ A comprehensive collection of everything learned while studying PyTorch — from
 8. [ANN on Fashion MNIST (GPU)](#8-ann-on-fashion-mnist-gpu)
 9. [Regularization Techniques](#9-regularization-techniques)
 10. [Hyperparameter Tuning with Optuna](#10-hyperparameter-tuning-with-optuna)
-11. [Files in this Repository](#11-files-in-this-repository)
+11. [CNN on Fashion MNIST (GPU)](#11-cnn-on-fashion-mnist-gpu)
+12. [Files in this Repository](#12-files-in-this-repository)
 
 ---
 
@@ -935,7 +936,239 @@ study.best_params
 
 ---
 
-## 11. Files in this Repository
+## 11. CNN on Fashion MNIST (GPU)
+
+A **Convolutional Neural Network (CNN)** trained on the full Fashion MNIST dataset with GPU acceleration. CNNs are specifically designed for image data — they exploit spatial locality through learnable convolutional filters, significantly outperforming flat ANNs on image classification tasks.
+
+### What is a CNN?
+
+A Convolutional Neural Network is a deep learning architecture that applies **convolutional filters** directly to 2D image grids rather than flattened pixel vectors. This preserves the spatial structure of images and allows the network to learn local features like edges, textures, and shapes in a hierarchical manner.
+
+#### Core CNN Concepts
+
+| Concept | Description |
+|---|---|
+| **Convolution** | Slides a small filter (kernel) across the image to produce a feature map |
+| **Kernel / Filter** | A learnable weight matrix (e.g., 3×3) that detects a specific pattern |
+| **Feature Map** | Output of applying a filter — one per filter per layer |
+| **Padding** | Adds zeros around the input border to control output spatial size (`same` keeps it identical) |
+| **Stride** | Step size the kernel moves across the input |
+| **ReLU** | Non-linear activation applied element-wise after each convolution |
+| **Batch Normalization** | Normalizes feature maps across the batch → faster, more stable training |
+| **Max Pooling** | Downsamples feature maps by taking the maximum value in each region → reduces spatial size, adds translation invariance |
+| **Flatten** | Converts the 2D feature maps into a 1D vector for fully-connected layers |
+| **Dropout** | Randomly zeros out neurons during training to prevent overfitting |
+
+#### How Convolution Works
+
+```
+Input image: (H × W)     Filter: (k × k)
+
+┌───────────────────┐     ┌───────┐
+│ 1  2  3  4  5     │     │ 1  0  │
+│ 6  7  8  9  10    │  *  │ 0  1  │  =  Feature Map
+│ 11 12 13 14 15    │     └───────┘
+│ ...               │
+└───────────────────┘
+```
+
+- For each position, the kernel is element-wise multiplied with the patch, summed, and a bias is added.
+- Multiple filters → multiple feature maps (channels).
+- Deeper layers learn increasingly abstract features: **edges → shapes → objects**.
+
+#### Max Pooling
+
+```
+Input (4×4)        MaxPool(2×2, stride=2)    Output (2×2)
+┌────────────┐     ──────────────────────►   ┌────────┐
+│ 1  3  2  4 │                               │  3  4  │
+│ 5  6  7  8 │                               │  9  12 │
+│ 1  2  3  4 │                               └────────┘
+│ 5  6  9  12│
+└────────────┘
+```
+
+Reduces spatial dimensions by 2×, keeping only the strongest activation in each 2×2 window.
+
+### Dataset
+
+- **Source:** `fashion-mnist_train.csv` (60,000 training samples, 784 pixel columns + 1 label)
+- **Preprocessing:** Pixel values normalized to `[0, 1]` by dividing by 255
+- **Input reshape:** Flat 784-pixel vectors reshaped to `(1, 28, 28)` — 1 channel, 28×28 spatial grid
+- **Split:** 80% train (48,000) / 20% test (12,000) via `train_test_split`
+- **Device:** GPU (`cuda`) detected and used automatically
+
+### Custom Dataset
+
+The dataset class reshapes the flat CSV pixel rows into 2D image tensors suitable for Conv2d:
+
+```python
+class CustomDataset(Dataset):
+    def __init__(self, features, labels):
+        # Reshape flat 784 pixels → (1, 28, 28) image tensors
+        self.features = torch.tensor(features, dtype=torch.float32).reshape(-1, 1, 28, 28)
+        self.labels   = torch.tensor(labels, dtype=torch.long)
+
+    def __len__(self):
+        return len(self.features)
+
+    def __getitem__(self, idx):
+        return self.features[idx], self.labels[idx]
+```
+
+### CNN Model Architecture — `MyNN`
+
+The model is split into two blocks: a **feature extractor** (convolutional) and a **classifier** (fully-connected).
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  INPUT: (batch, 1, 28, 28)   — grayscale Fashion MNIST      │
+├─────────────────────────────────────────────────────────────┤
+│  FEATURE EXTRACTOR                                          │
+│  ├─ Conv2d(1→32, 3×3, padding=same) → (batch, 32, 28, 28)  │
+│  ├─ ReLU                                                    │
+│  ├─ BatchNorm2d(32)                                         │
+│  ├─ MaxPool2d(2×2, stride=2)         → (batch, 32, 14, 14)  │
+│  │                                                          │
+│  ├─ Conv2d(32→64, 3×3, padding=same) → (batch, 64, 14, 14) │
+│  ├─ ReLU                                                    │
+│  └─ MaxPool2d(2×2, stride=2)         → (batch, 64,  7,  7) │
+├─────────────────────────────────────────────────────────────┤
+│  CLASSIFIER                                                  │
+│  ├─ Flatten                          → (batch, 3136)        │
+│  ├─ Linear(3136 → 128)                                      │
+│  ├─ ReLU                                                    │
+│  ├─ Dropout(p=0.4)                                          │
+│  ├─ Linear(128 → 64)                                        │
+│  ├─ ReLU                                                    │
+│  ├─ Dropout(p=0.4)                                          │
+│  └─ Linear(64 → 10)                  → (batch, 10) logits  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+> `64 × 7 × 7 = 3136` — the flattened size after two MaxPool(2×2) operations on a 28×28 input.
+
+```python
+class MyNN(nn.Module):
+    def __init__(self, input_features):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(in_channels=input_features, out_channels=32, kernel_size=3, padding='same'),
+            nn.ReLU(),
+            nn.BatchNorm2d(32),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding='same'),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2)
+        )
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(in_features=64 * 7 * 7, out_features=128),
+            nn.ReLU(),
+            nn.Dropout(p=0.4),
+
+            nn.Linear(in_features=128, out_features=64),
+            nn.ReLU(),
+            nn.Dropout(p=0.4),
+
+            nn.Linear(in_features=64, out_features=10)
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
+```
+
+### Spatial Dimension Tracking
+
+| Layer | Output Shape | Notes |
+|---|---|---|
+| Input | `(B, 1, 28, 28)` | 1 grayscale channel |
+| Conv2d(1→32, k=3, same) | `(B, 32, 28, 28)` | 32 filters, spatial size preserved |
+| BatchNorm2d(32) | `(B, 32, 28, 28)` | Normalizes across batch |
+| MaxPool2d(2, stride=2) | `(B, 32, 14, 14)` | Halves spatial dims |
+| Conv2d(32→64, k=3, same) | `(B, 64, 14, 14)` | 64 filters |
+| MaxPool2d(2, stride=2) | `(B, 64, 7, 7)` | Halves spatial dims again |
+| Flatten | `(B, 3136)` | 64×7×7 = 3136 |
+| Linear(3136→128) | `(B, 128)` | Fully connected |
+| Dropout(0.4) | `(B, 128)` | 40% dropped during training |
+| Linear(128→64) | `(B, 64)` | |
+| Dropout(0.4) | `(B, 64)` | |
+| Linear(64→10) | `(B, 10)` | Raw logits for 10 classes |
+
+### Training Configuration
+
+| Hyperparameter | Value |
+|---|---|
+| Epochs | 100 |
+| Learning Rate | 0.01 |
+| Optimizer | SGD |
+| Weight Decay (L2) | `1e-4` |
+| Loss Function | CrossEntropyLoss |
+| Batch Size | 32 |
+| `pin_memory` | `True` (faster CPU→GPU transfer) |
+| Device | CUDA (T4 GPU on Colab) |
+
+### GPU-Accelerated Training Loop
+
+```python
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+model = MyNN(1).to(device)
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.SGD(model.parameters(), lr=0.01, weight_decay=1e-4)
+
+for epoch in range(epochs):
+    total_epoch_loss = 0
+    for batch_features, batch_labels in train_loader:
+        batch_features = batch_features.to(device)   # move to GPU
+        batch_labels   = batch_labels.to(device)
+
+        outputs = model(batch_features)              # forward pass
+        loss    = criterion(outputs, batch_labels)   # compute loss
+
+        optimizer.zero_grad()                        # clear gradients
+        loss.backward()                              # backward pass
+        optimizer.step()                             # update weights
+
+        total_epoch_loss += loss.item()
+
+    print(f"Epoch {epoch+1}/{epochs}, Loss: {total_epoch_loss/len(train_loader):.4f}")
+```
+
+### Results
+
+| Metric | Value |
+|---|---|
+| **Test Accuracy** | **92.27%** |
+| **Train Accuracy** | **99.88%** |
+| Final Training Loss | ~0.026 (Epoch 100) |
+
+### CNN vs ANN Comparison
+
+| Aspect | ANN (Flat) | CNN |
+|---|---|---|
+| Input format | Flattened 784-dim vector | 2D image `(1, 28, 28)` |
+| Spatial awareness | ✗ — loses all structure | ✓ — exploits 2D locality |
+| Parameter efficiency | Many params for full connections | Few params via weight sharing |
+| Test accuracy (Fashion MNIST) | ~83.5% | **~92.3%** |
+| Train accuracy | ~high | ~99.9% |
+| Suitable for | Tabular / structured data | Images, audio, time series |
+
+### Key Takeaways
+
+- **CNNs dramatically outperform ANNs on images** — 92.3% vs 83.5% on the same dataset.
+- **Weight sharing** makes CNNs parameter-efficient: a 3×3 filter has only 9 weights regardless of image size.
+- **Hierarchical feature learning**: Conv1 detects edges, Conv2 detects textures/shapes, the classifier makes decisions.
+- **BatchNorm2d** after the first conv block accelerates convergence and acts as a regularizer.
+- **`pin_memory=True`** in DataLoader speeds up CPU→GPU data transfer.
+- The model shows slight **overfitting** (train: 99.9%, test: 92.3%) — could be reduced with more aggressive dropout or data augmentation.
+
+---
+
+## 12. Files in this Repository
 
 | File | Description |
 |---|---|
@@ -949,6 +1182,7 @@ study.best_params
 | [`ann_fashion_mnist_python.ipynb`](./ann_fashion_mnist_python.ipynb) | ANN trained on Fashion MNIST (83.5% accuracy) |
 | [`ann_fashion_mnist_python_gpu.ipynb`](./ann_fashion_mnist_python_gpu.ipynb) | ANN on Fashion MNIST with GPU acceleration (`cuda`) |
 | [`Hyperparameter_Tuning_the_ANN_using_Optuna.ipynb`](./Hyperparameter_Tuning_the_ANN_using_Optuna.ipynb) | ANN hyperparameter tuning with Optuna (best: ~89.7% accuracy) |
+| [`cnn_fashion_mnist_python_gpu.ipynb`](./cnn_fashion_mnist_python_gpu.ipynb) | **CNN** on Fashion MNIST with GPU — 2 conv blocks + classifier, **92.3% test accuracy** |
 | [`fmnist_small.csv`](./fmnist_small.csv) | Fashion MNIST dataset (CSV format) |
 
 ---
