@@ -18,6 +18,8 @@ A comprehensive collection of everything learned while studying PyTorch — from
 10. [Hyperparameter Tuning with Optuna](#10-hyperparameter-tuning-with-optuna)
 11. [CNN on Fashion MNIST (GPU)](#11-cnn-on-fashion-mnist-gpu)
 12. [Files in this Repository](#12-files-in-this-repository)
+13. [Transfer Learning with VGG16 on Fashion MNIST (GPU)](#13-transfer-learning-with-vgg16-on-fashion-mnist-gpu)
+
 
 ---
 
@@ -1168,6 +1170,161 @@ for epoch in range(epochs):
 
 ---
 
+## 13. Transfer Learning with VGG16 on Fashion MNIST (GPU)
+
+This notebook demonstrates **Transfer Learning** — reusing a powerful CNN pretrained on ImageNet and fine-tuning only its classifier for the Fashion MNIST task.
+
+### What is Transfer Learning?
+
+Transfer learning leverages a model pre-trained on a large dataset (ImageNet, 1M+ images, 1000 classes) and adapts it to a new, smaller task. The pretrained **feature extractor** (convolutional layers) already knows how to detect edges, textures, and shapes — so we freeze those weights and only train a new **classifier head** on top.
+
+| Strategy | Description |
+|---|---|
+| **Feature extraction** | Freeze all pretrained layers; only train the new classifier |
+| **Fine-tuning** | Unfreeze some/all layers and retrain end-to-end at a low LR |
+
+This notebook uses **feature extraction**: the VGG16 convolutional backbone is frozen, and only the custom classifier is trained.
+
+### Pretrained Model — VGG16
+
+VGG16 is a 16-layer deep CNN originally trained on ImageNet. It consists of:
+- **Feature extractor**: 13 convolutional layers (grouped in 5 max-pooling blocks)
+- **Classifier**: 3 fully-connected layers → 1000 ImageNet classes
+
+```python
+from torchvision import models
+vgg16 = models.vgg16(pretrained=True)
+```
+
+### Dataset & Preprocessing
+
+- **Source:** `fashion-mnist_train.csv` (60,000 samples, 784 pixel columns + 1 label)
+- **Split:** 80% train (48,000) / 20% test (12,000) via `train_test_split` (`random_state=42`)
+- **Preprocessing:** Missing values imputed via `SimpleImputer(strategy="median")`
+- **Device:** GPU (`cuda`) detected and used automatically
+
+#### Image Preparation for VGG16
+
+VGG16 expects **RGB images of size 224×224**, normalized with ImageNet statistics. Since Fashion MNIST images are 28×28 grayscale, a custom pipeline handles the conversion:
+
+```python
+# torchvision transform pipeline
+custom_transform = transforms.Compose([
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
+])
+```
+
+```python
+class CustomDataset(Dataset):
+    def __getitem__(self, index):
+        image = self.features[index].reshape(28, 28)      # reshape
+        image = image.astype(np.uint8)                    # cast to uint8
+        image = np.stack([image] * 3, axis=2)             # grayscale → RGB (H,W,C)
+        image = Image.fromarray(image)                    # to PIL
+        image = self.transform(image)                     # resize + normalize
+        return image, torch.tensor(self.label[index], dtype=torch.long)
+```
+
+### Feature Extractor — Frozen VGG16 Backbone
+
+All parameters in `vgg16.features` are frozen so they are not updated during training:
+
+```python
+for param in vgg16.features.parameters():
+    param.requires_grad = False
+```
+
+### Custom Classifier Head
+
+The original VGG16 classifier (1000 classes) is replaced with a 3-layer head for 10 Fashion MNIST classes:
+
+```
+Original VGG16 classifier:
+  Linear(25088 → 4096) → ReLU → Dropout(0.5)
+  Linear(4096  → 4096) → ReLU → Dropout(0.5)
+  Linear(4096  → 1000)
+
+Replaced with:
+  Linear(25088 → 1024) → ReLU → Dropout(0.5)
+  Linear(1024  → 512)  → ReLU → Dropout(0.5)
+  Linear(512   → 10)   ← 10 Fashion MNIST classes
+```
+
+```python
+vgg16.classifier = nn.Sequential(
+    nn.Linear(in_features=25088, out_features=1024),
+    nn.ReLU(),
+    nn.Dropout(0.5),
+    nn.Linear(in_features=1024, out_features=512),
+    nn.ReLU(),
+    nn.Dropout(0.5),
+    nn.Linear(in_features=512, out_features=10)
+)
+```
+
+### Training Configuration
+
+| Hyperparameter | Value |
+|---|---|
+| Epochs | 10 |
+| Learning Rate | 0.0001 |
+| Optimizer | Adam (classifier params only) |
+| Loss Function | CrossEntropyLoss |
+| Batch Size | 32 |
+| `pin_memory` | `True` |
+| Device | CUDA (T4 GPU on Colab) |
+
+> **Note:** Only `vgg16.classifier.parameters()` are passed to the optimizer — the frozen feature layers are excluded from gradient updates.
+
+### Training Loss Progression
+
+| Epoch | Loss |
+|---|---|
+| 1 | 0.3669 |
+| 2 | 0.2162 |
+| 3 | 0.1683 |
+| 4 | 0.1318 |
+| 5 | 0.1044 |
+| 6 | 0.0821 |
+| 7 | 0.0663 |
+| 8 | 0.0579 |
+| 9 | 0.0466 |
+| 10 | 0.0409 |
+
+### Results
+
+| Metric | Value |
+|---|---|
+| **Test Accuracy** | **92.88%** |
+| **Train Accuracy** | **99.80%** |
+
+### Model Comparison
+
+| Approach | Architecture | Test Accuracy | Epochs | Notes |
+|---|---|---|---|---|
+| ANN | Flat 3-layer MLP | ~83.5% | 100 | Baseline |
+| Optuna-tuned ANN | Dynamic 3-layer MLP | ~89.7% | 40 | Best of 10 trials |
+| CNN (custom) | 2 Conv blocks + classifier | ~92.3% | 100 | Custom from scratch |
+| **Transfer Learning (VGG16)** | **Frozen VGG16 + custom head** | **~92.9%** | **10** | **Best accuracy in fewest epochs** |
+
+### Key Takeaways
+
+| Insight | Detail |
+|---|---|
+| **Efficiency** | Achieved ~92.9% accuracy in only **10 epochs** vs. 100 for the custom CNN |
+| **Feature reuse** | ImageNet-pretrained filters generalize well even to grayscale Fashion MNIST |
+| **Frozen backbone** | Only ~3.6M classifier params trained instead of VGG16's full ~138M |
+| **Overfitting** | Train 99.8% vs. Test 92.9% — gap could be reduced with data augmentation |
+| **Practical tip** | Transfer learning is ideal when labeled data is limited or training from scratch is too slow |
+
+> **Tip:** For even better results, try **fine-tuning** — unfreeze the last few conv blocks of VGG16 and train with a very small learning rate (e.g., `1e-5`).
+
+---
+
 ## 12. Files in this Repository
 
 | File | Description |
@@ -1183,6 +1340,7 @@ for epoch in range(epochs):
 | [`ann_fashion_mnist_python_gpu.ipynb`](./ann_fashion_mnist_python_gpu.ipynb) | ANN on Fashion MNIST with GPU acceleration (`cuda`) |
 | [`Hyperparameter_Tuning_the_ANN_using_Optuna.ipynb`](./Hyperparameter_Tuning_the_ANN_using_Optuna.ipynb) | ANN hyperparameter tuning with Optuna (best: ~89.7% accuracy) |
 | [`cnn_fashion_mnist_python_gpu.ipynb`](./cnn_fashion_mnist_python_gpu.ipynb) | **CNN** on Fashion MNIST with GPU — 2 conv blocks + classifier, **92.3% test accuracy** |
+| [`Transfer_Learning_using_PyTorch.ipynb`](./Transfer_Learning_using_PyTorch.ipynb) | **Transfer Learning** with frozen VGG16 backbone on Fashion MNIST — **92.88% test accuracy in just 10 epochs** |
 | [`fmnist_small.csv`](./fmnist_small.csv) | Fashion MNIST dataset (CSV format) |
 
 ---
