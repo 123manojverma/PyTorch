@@ -19,6 +19,7 @@ A comprehensive collection of everything learned while studying PyTorch — from
 11. [CNN on Fashion MNIST (GPU)](#11-cnn-on-fashion-mnist-gpu)
 12. [Files in this Repository](#12-files-in-this-repository)
 13. [Transfer Learning with VGG16 on Fashion MNIST (GPU)](#13-transfer-learning-with-vgg16-on-fashion-mnist-gpu)
+14. [RNN-Based QA System](#14-rnn-based-qa-system)
 
 
 ---
@@ -1341,7 +1342,206 @@ vgg16.classifier = nn.Sequential(
 | [`Hyperparameter_Tuning_the_ANN_using_Optuna.ipynb`](./Hyperparameter_Tuning_the_ANN_using_Optuna.ipynb) | ANN hyperparameter tuning with Optuna (best: ~89.7% accuracy) |
 | [`cnn_fashion_mnist_python_gpu.ipynb`](./cnn_fashion_mnist_python_gpu.ipynb) | **CNN** on Fashion MNIST with GPU — 2 conv blocks + classifier, **92.3% test accuracy** |
 | [`Transfer_Learning_using_PyTorch.ipynb`](./Transfer_Learning_using_PyTorch.ipynb) | **Transfer Learning** with frozen VGG16 backbone on Fashion MNIST — **92.88% test accuracy in just 10 epochs** |
+| [`pytorch_rnn_based_qa_system.ipynb`](./pytorch_rnn_based_qa_system.ipynb) | **RNN-based QA system** — tokenisation, vocabulary building, custom Dataset, `SimpleRNN` with `nn.Embedding`, training on 90 Q&A pairs, inference with confidence threshold |
 | [`fmnist_small.csv`](./fmnist_small.csv) | Fashion MNIST dataset (CSV format) |
+
+---
+
+## 14. RNN-Based QA System
+
+A minimal but complete **Question-Answering system** built from scratch with PyTorch's `nn.RNN`. The model reads a tokenised question, encodes it with an RNN, and predicts the most likely answer word from a shared vocabulary.
+
+### Dataset
+
+- **Source:** `100_Unique_QA_Dataset.csv` — 90 question-answer pairs covering geography, science, history, and culture.
+- **Columns:** `question` (text) and `answer` (text)
+
+| question | answer |
+|---|---|
+| What is the capital of France? | Paris |
+| Who wrote 'To Kill a Mockingbird'? | Harper-Lee |
+| What is the largest planet in our solar system? | Jupiter |
+
+### Pipeline Overview
+
+```
+Raw CSV  ->  Tokenise  ->  Build Vocabulary  ->  Convert to indices
+         ->  QADataset  ->  DataLoader (batch_size=1)
+         ->  SimpleRNN (Embedding + RNN + Linear)  ->  CrossEntropyLoss
+         ->  Adam optimiser  ->  Predict with softmax threshold
+```
+
+### Step 1 — Tokenisation
+
+```python
+def tokenize(text):
+    text = text.lower()
+    text = text.replace('?', '')
+    text = text.replace("'", "")
+    return text.split()
+```
+
+### Step 2 — Vocabulary Building
+
+```python
+vocab = {'<UNK>': 0}   # unknown token at index 0
+
+def build_vocab(row):
+    merged = tokenize(row['question']) + tokenize(row['answer'])
+    for token in merged:
+        if token not in vocab:
+            vocab[token] = len(vocab)
+
+df.apply(build_vocab, axis=1)
+print(len(vocab))   # -> 324
+```
+
+All question and answer tokens are pooled into a single shared vocabulary of **324 tokens**.
+
+### Step 3 — Text to Index Conversion
+
+```python
+def text_to_indices(text, vocab):
+    return [
+        vocab[token] if token in vocab else vocab['<UNK>']
+        for token in tokenize(text)
+    ]
+```
+
+### Step 4 — Custom Dataset and DataLoader
+
+```python
+class QADataset:
+    def __init__(self, df, vocab):
+        self.df    = df
+        self.vocab = vocab
+
+    def __len__(self):
+        return self.df.shape[0]
+
+    def __getitem__(self, idx):
+        q = text_to_indices(self.df.iloc[idx]['question'], self.vocab)
+        a = text_to_indices(self.df.iloc[idx]['answer'],   self.vocab)
+        return torch.tensor(q), torch.tensor(a)
+
+dataset    = QADataset(df, vocab)
+dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
+```
+
+`batch_size=1` is used because questions have variable lengths.
+
+### Step 5 — Model Architecture — `SimpleRNN`
+
+```
+Question tokens (variable length)
+        |
+  nn.Embedding(324, 50)      <- each token -> 50-dim dense vector
+        |
+  nn.RNN(50, 64, batch_first=True)
+        |  (takes final hidden state)
+  nn.Linear(64, 324)         <- logits over the entire vocabulary
+        |
+  Predicted answer word index
+```
+
+```python
+class SimpleRNN(nn.Module):
+    def __init__(self, vocab_size):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim=50)
+        self.rnn       = nn.RNN(50, 64, batch_first=True)
+        self.fc        = nn.Linear(64, vocab_size)
+
+    def forward(self, question):
+        embedded = self.embedding(question)       # (B, seq_len, 50)
+        _, final = self.rnn(embedded)             # final: (1, B, 64)
+        output   = self.fc(final.squeeze(0))      # (B, vocab_size)
+        return output
+```
+
+#### Tensor Shape Walkthrough
+
+| Step | Shape | Notes |
+|---|---|---|
+| Input tokens | `(1, seq_len)` | One question at a time |
+| After Embedding | `(1, seq_len, 50)` | 50-dim embedding per token |
+| RNN all hidden states | `(1, seq_len, 64)` | Not used |
+| RNN final hidden state | `(1, 1, 64)` | Context of the full question |
+| After squeeze + Linear | `(1, 324)` | Logit for each vocab word |
+
+### Step 6 — Training
+
+| Hyperparameter | Value |
+|---|---|
+| Epochs | 20 |
+| Learning Rate | 0.001 |
+| Optimizer | Adam |
+| Loss Function | CrossEntropyLoss |
+| Batch Size | 1 |
+
+```python
+model     = SimpleRNN(len(vocab))
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+for epoch in range(20):
+    total_loss = 0
+    for question, answer in dataloader:
+        optimizer.zero_grad()
+        output = model(question)               # forward pass
+        loss   = criterion(output, answer[0])  # answer[0]: target index
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+    print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}")
+```
+
+#### Training Loss Progression
+
+| Epoch | Loss |
+|---|---|
+| 1 | 523.87 |
+| 5 | 265.10 |
+| 10 | 82.69 |
+| 15 | 27.66 |
+| 20 | 12.68 |
+
+Loss drops by ~97.6% over 20 epochs, showing the model learns to map questions to answers.
+
+### Step 7 — Inference
+
+```python
+def predict(model, question, threshold=0.4):
+    indices = text_to_indices(question, vocab)
+    tensor  = torch.tensor(indices).unsqueeze(0)   # (1, seq_len)
+    output  = model(tensor)
+    probs   = torch.nn.functional.softmax(output, dim=1)
+    value, index = torch.max(probs, dim=1)
+    if value < threshold:
+        print("I don't know")
+    else:
+        print(list(vocab.keys())[index])
+```
+
+The model converts logits to probabilities via softmax and uses a **confidence threshold** (0.4). If the top probability is too low, it answers *"I don't know"* instead of guessing.
+
+**Example:**
+```python
+predict(model, "What is the largest planet in our solar system")
+# -> jupiter
+```
+
+### Key Concepts Demonstrated
+
+| Concept | Detail |
+|---|---|
+| `nn.Embedding` | Converts integer token IDs to dense trainable vectors |
+| `nn.RNN` | Processes a sequence and produces a final hidden state summarising it |
+| Variable-length input | Handled naturally by RNNs — no padding needed with `batch_size=1` |
+| Shared vocabulary | Questions and answers share the same token space (324 tokens) |
+| Confidence threshold | Prevents low-confidence hallucinations at inference time |
+
+> **Note:** This is a closed-domain, lookup-style QA system trained on a small dataset. It memorises question-to-answer mappings rather than performing generalised reasoning. For better generalisation, consider using LSTM/GRU cells, adding more data, or integrating attention.
 
 ---
 
